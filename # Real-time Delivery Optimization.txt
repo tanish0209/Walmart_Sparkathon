@@ -1,0 +1,1025 @@
+# Real-time Delivery Optimization System
+# Complete implementation with Kafka, Spark, Route Optimization, and React Dashboard
+
+import json
+import time
+import random
+import numpy as np
+from datetime import datetime, timedelta
+from typing import List, Dict, Tuple, Optional
+import threading
+import logging
+from dataclasses import dataclass, asdict
+from collections import defaultdict
+import math
+
+# Kafka dependencies
+from kafka import KafkaProducer, KafkaConsumer
+from kafka.errors import KafkaError
+
+# Spark dependencies
+from pyspark.sql import SparkSession
+from pyspark.streaming import StreamingContext
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pyspark.ml.clustering import KMeans, DBSCAN
+from pyspark.ml.feature import VectorAssembler
+from pyspark.graphx import *
+
+# External APIs
+import requests
+from geopy.distance import geodesic
+
+# Flask for API endpoints
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# =============================================================================
+# 1. DATA MODELS AND CONFIGURATION
+# =============================================================================
+
+@dataclass
+class Order:
+    order_id: str
+    customer_id: str
+    latitude: float
+    longitude: float
+    delivery_time_slot: str  # "09:00-11:00", "14:00-16:00", etc.
+    package_size: str  # "small", "medium", "large"
+    package_volume: float  # cubic meters
+    package_weight: float  # kg
+    priority: int  # 1-5 (5 highest)
+    timestamp: datetime
+    
+    def to_dict(self):
+        return {
+            **asdict(self),
+            'timestamp': self.timestamp.isoformat()
+        }
+
+@dataclass
+class Driver:
+    driver_id: str
+    name: str
+    current_latitude: float
+    current_longitude: float
+    vehicle_capacity_volume: float  # cubic meters
+    vehicle_capacity_weight: float  # kg
+    shift_start: str
+    shift_end: str
+    is_available: bool
+    current_load_volume: float = 0.0
+    current_load_weight: float = 0.0
+    
+@dataclass
+class DeliveryCluster:
+    cluster_id: str
+    orders: List[Order]
+    centroid_lat: float
+    centroid_lon: float
+    time_window: str
+    total_volume: float
+    total_weight: float
+    estimated_duration: int  # minutes
+
+@dataclass
+class OptimizedRoute:
+    route_id: str
+    driver_id: str
+    clusters: List[DeliveryCluster]
+    waypoints: List[Tuple[float, float]]
+    total_distance: float  # km
+    estimated_duration: int  # minutes
+    delivery_sequence: List[str]  # order_ids in delivery order
+
+# Configuration
+class Config:
+    KAFKA_BOOTSTRAP_SERVERS = ['localhost:9092']
+    KAFKA_ORDER_TOPIC = 'delivery_orders'
+    KAFKA_ROUTE_TOPIC = 'optimized_routes'
+    KAFKA_TRACKING_TOPIC = 'vehicle_tracking'
+    
+    # Mapbox API (replace with your key)
+    MAPBOX_ACCESS_TOKEN = 'your_mapbox_access_token_here'
+    
+    # OSRM API endpoint
+    OSRM_ENDPOINT = 'http://router.project-osrm.org'
+    
+    # Clustering parameters
+    CLUSTER_MAX_RADIUS_KM = 5.0  # Max radius for geospatial clustering
+    TIME_WINDOW_DURATION = 120  # minutes
+    MIN_ORDERS_PER_CLUSTER = 3
+    MAX_ORDERS_PER_CLUSTER = 15
+    
+    # Vehicle constraints
+    MAX_DELIVERIES_PER_DRIVER = 20
+    MAX_SHIFT_DURATION = 480  # minutes (8 hours)
+
+# =============================================================================
+# 2. DATA INGESTION - KAFKA PRODUCER (Order Simulation)
+# =============================================================================
+
+class OrderGenerator:
+    """Simulates e-commerce orders and publishes to Kafka"""
+    
+    def __init__(self, producer: KafkaProducer):
+        self.producer = producer
+        self.running = False
+        
+        # Sample delivery areas (major cities)
+        self.delivery_zones = [
+            {"name": "Downtown", "lat": 40.7589, "lon": -73.9851, "radius": 0.02},
+            {"name": "Midtown", "lat": 40.7505, "lon": -73.9934, "radius": 0.015},
+            {"name": "Brooklyn", "lat": 40.6892, "lon": -73.9442, "radius": 0.03},
+            {"name": "Queens", "lat": 40.7282, "lon": -73.7949, "radius": 0.025},
+        ]
+        
+        self.time_slots = [
+            "09:00-11:00", "11:00-13:00", "13:00-15:00", 
+            "15:00-17:00", "17:00-19:00", "19:00-21:00"
+        ]
+        
+        self.package_sizes = {
+            "small": {"volume": 0.01, "weight": 2.0},
+            "medium": {"volume": 0.05, "weight": 8.0},
+            "large": {"volume": 0.15, "weight": 20.0}
+        }
+    
+    def generate_order(self) -> Order:
+        """Generate a random order"""
+        zone = random.choice(self.delivery_zones)
+        
+        # Generate location within zone radius
+        lat_offset = random.uniform(-zone["radius"], zone["radius"])
+        lon_offset = random.uniform(-zone["radius"], zone["radius"])
+        
+        lat = zone["lat"] + lat_offset
+        lon = zone["lon"] + lon_offset
+        
+        package_size = random.choice(list(self.package_sizes.keys()))
+        package_specs = self.package_sizes[package_size]
+        
+        # Bias towards near-future time slots
+        time_slot = random.choices(
+            self.time_slots,
+            weights=[0.3, 0.3, 0.2, 0.1, 0.05, 0.05]
+        )[0]
+        
+        return Order(
+            order_id=f"ORD_{int(time.time() * 1000)}_{random.randint(1000, 9999)}",
+            customer_id=f"CUST_{random.randint(10000, 99999)}",
+            latitude=lat,
+            longitude=lon,
+            delivery_time_slot=time_slot,
+            package_size=package_size,
+            package_volume=package_specs["volume"] * random.uniform(0.8, 1.2),
+            package_weight=package_specs["weight"] * random.uniform(0.8, 1.2),
+            priority=random.choices([1, 2, 3, 4, 5], weights=[0.1, 0.2, 0.4, 0.2, 0.1])[0],
+            timestamp=datetime.now()
+        )
+    
+    def start_generation(self, orders_per_minute: int = 10):
+        """Start generating and publishing orders"""
+        self.running = True
+        
+        def generate_loop():
+            while self.running:
+                try:
+                    order = self.generate_order()
+                    
+                    # Publish to Kafka
+                    self.producer.send(
+                        Config.KAFKA_ORDER_TOPIC,
+                        key=order.order_id.encode('utf-8'),
+                        value=json.dumps(order.to_dict()).encode('utf-8')
+                    )
+                    
+                    logger.info(f"Published order: {order.order_id}")
+                    
+                    # Wait before generating next order
+                    time.sleep(60 / orders_per_minute)
+                    
+                except Exception as e:
+                    logger.error(f"Error generating order: {e}")
+                    time.sleep(1)
+        
+        thread = threading.Thread(target=generate_loop)
+        thread.daemon = True
+        thread.start()
+        
+        return thread
+    
+    def stop_generation(self):
+        """Stop order generation"""
+        self.running = False
+
+# =============================================================================
+# 3. REAL-TIME CLUSTERING WITH SPARK STREAMING
+# =============================================================================
+
+class OrderClusteringEngine:
+    """Real-time order clustering using Spark Streaming + MLlib"""
+    
+    def __init__(self, spark_session: SparkSession):
+        self.spark = spark_session
+        self.orders_buffer = []
+        self.clusters = []
+        
+    def haversine_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Calculate distance between two points in km"""
+        return geodesic((lat1, lon1), (lat2, lon2)).kilometers
+    
+    def time_slot_to_minutes(self, time_slot: str) -> int:
+        """Convert time slot to minutes since midnight"""
+        start_time = time_slot.split('-')[0]
+        hours, minutes = map(int, start_time.split(':'))
+        return hours * 60 + minutes
+    
+    def cluster_orders_geospatial(self, orders: List[Order]) -> List[List[Order]]:
+        """Cluster orders using DBSCAN based on geolocation"""
+        if len(orders) < 2:
+            return [[order] for order in orders]
+        
+        # Convert to Spark DataFrame
+        order_data = []
+        for order in orders:
+            order_data.append({
+                'order_id': order.order_id,
+                'latitude': order.latitude,
+                'longitude': order.longitude,
+                'time_minutes': self.time_slot_to_minutes(order.delivery_time_slot),
+                'volume': order.package_volume,
+                'weight': order.package_weight
+            })
+        
+        df = self.spark.createDataFrame(order_data)
+        
+        # Prepare features for clustering (lat, lon, normalized time)
+        assembler = VectorAssembler(
+            inputCols=['latitude', 'longitude', 'time_minutes'],
+            outputCol='features'
+        )
+        
+        feature_df = assembler.transform(df)
+        
+        # Use K-Means clustering (DBSCAN not directly available in MLlib)
+        # Estimate k based on order density
+        k = min(max(2, len(orders) // 5), 8)
+        
+        kmeans = KMeans(k=k, seed=42, featuresCol='features', predictionCol='cluster')
+        model = kmeans.fit(feature_df)
+        
+        clustered_df = model.transform(feature_df)
+        
+        # Group orders by cluster
+        clusters = defaultdict(list)
+        
+        for row in clustered_df.collect():
+            cluster_id = row['cluster']
+            # Find original order
+            for order in orders:
+                if order.order_id == row['order_id']:
+                    clusters[cluster_id].append(order)
+                    break
+        
+        # Filter clusters by constraints
+        valid_clusters = []
+        for cluster_orders in clusters.values():
+            if (Config.MIN_ORDERS_PER_CLUSTER <= len(cluster_orders) <= 
+                Config.MAX_ORDERS_PER_CLUSTER):
+                valid_clusters.append(cluster_orders)
+            else:
+                # Add individual orders as single-order clusters
+                for order in cluster_orders:
+                    valid_clusters.append([order])
+        
+        return valid_clusters
+    
+    def refine_clusters_by_time_and_capacity(self, geo_clusters: List[List[Order]]) -> List[DeliveryCluster]:
+        """Refine clusters considering time windows and vehicle capacity"""
+        delivery_clusters = []
+        
+        for geo_cluster in geo_clusters:
+            # Group by time windows
+            time_groups = defaultdict(list)
+            
+            for order in geo_cluster:
+                time_groups[order.delivery_time_slot].append(order)
+            
+            # Create delivery clusters for each time group
+            for time_slot, time_orders in time_groups.items():
+                if not time_orders:
+                    continue
+                
+                # Calculate centroid
+                centroid_lat = sum(o.latitude for o in time_orders) / len(time_orders)
+                centroid_lon = sum(o.longitude for o in time_orders) / len(time_orders)
+                
+                # Calculate totals
+                total_volume = sum(o.package_volume for o in time_orders)
+                total_weight = sum(o.package_weight for o in time_orders)
+                
+                # Estimate duration (15 min per delivery + 5 min travel between)
+                estimated_duration = len(time_orders) * 15 + (len(time_orders) - 1) * 5
+                
+                cluster = DeliveryCluster(
+                    cluster_id=f"CLUSTER_{int(time.time() * 1000)}_{random.randint(100, 999)}",
+                    orders=time_orders,
+                    centroid_lat=centroid_lat,
+                    centroid_lon=centroid_lon,
+                    time_window=time_slot,
+                    total_volume=total_volume,
+                    total_weight=total_weight,
+                    estimated_duration=estimated_duration
+                )
+                
+                delivery_clusters.append(cluster)
+        
+        return delivery_clusters
+    
+    def process_order_batch(self, orders: List[Order]) -> List[DeliveryCluster]:
+        """Process a batch of orders and return clusters"""
+        if not orders:
+            return []
+        
+        # Step 1: Geospatial clustering
+        geo_clusters = self.cluster_orders_geospatial(orders)
+        
+        # Step 2: Refine by time and capacity
+        delivery_clusters = self.refine_clusters_by_time_and_capacity(geo_clusters)
+        
+        logger.info(f"Created {len(delivery_clusters)} delivery clusters from {len(orders)} orders")
+        
+        return delivery_clusters
+
+# =============================================================================
+# 4. ROUTE OPTIMIZATION
+# =============================================================================
+
+class RouteOptimizer:
+    """Route optimization using OSRM or Mapbox APIs"""
+    
+    def __init__(self, use_mapbox: bool = False):
+        self.use_mapbox = use_mapbox
+        
+    def get_route_osrm(self, waypoints: List[Tuple[float, float]]) -> Dict:
+        """Get optimized route using OSRM"""
+        if len(waypoints) < 2:
+            return {"distance": 0, "duration": 0, "geometry": []}
+        
+        # Format coordinates for OSRM (lon,lat format)
+        coords = ";".join([f"{lon},{lat}" for lat, lon in waypoints])
+        
+        url = f"{Config.OSRM_ENDPOINT}/route/v1/driving/{coords}"
+        params = {
+            "overview": "full",
+            "geometries": "geojson",
+            "steps": "true"
+        }
+        
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            if data["code"] == "Ok" and data["routes"]:
+                route = data["routes"][0]
+                return {
+                    "distance": route["distance"] / 1000,  # Convert to km
+                    "duration": route["duration"] / 60,    # Convert to minutes
+                    "geometry": route["geometry"]["coordinates"]
+                }
+        except Exception as e:
+            logger.error(f"OSRM API error: {e}")
+        
+        # Fallback: calculate straight-line distance
+        total_distance = 0
+        for i in range(len(waypoints) - 1):
+            total_distance += geodesic(waypoints[i], waypoints[i + 1]).kilometers
+        
+        return {
+            "distance": total_distance,
+            "duration": total_distance * 3,  # Assume 20 km/h average speed
+            "geometry": waypoints
+        }
+    
+    def get_route_mapbox(self, waypoints: List[Tuple[float, float]]) -> Dict:
+        """Get optimized route using Mapbox Optimization API"""
+        if not Config.MAPBOX_ACCESS_TOKEN or Config.MAPBOX_ACCESS_TOKEN == 'your_mapbox_access_token_here':
+            return self.get_route_osrm(waypoints)
+        
+        if len(waypoints) < 2:
+            return {"distance": 0, "duration": 0, "geometry": []}
+        
+        # Format coordinates for Mapbox (lon,lat format)
+        coords = ";".join([f"{lon},{lat}" for lat, lon in waypoints])
+        
+        url = f"https://api.mapbox.com/optimized-trips/v1/mapbox/driving/{coords}"
+        params = {
+            "access_token": Config.MAPBOX_ACCESS_TOKEN,
+            "overview": "full",
+            "geometries": "geojson",
+            "steps": "true"
+        }
+        
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            if "trips" in data and data["trips"]:
+                trip = data["trips"][0]
+                return {
+                    "distance": trip["distance"] / 1000,  # Convert to km
+                    "duration": trip["duration"] / 60,    # Convert to minutes
+                    "geometry": trip["geometry"]["coordinates"],
+                    "waypoint_order": [wp["waypoint_index"] for wp in data["waypoints"]]
+                }
+        except Exception as e:
+            logger.error(f"Mapbox API error: {e}")
+            
+        # Fallback to OSRM
+        return self.get_route_osrm(waypoints)
+    
+    def optimize_cluster_route(self, cluster: DeliveryCluster, depot_location: Tuple[float, float] = None) -> OptimizedRoute:
+        """Optimize delivery route for a single cluster"""
+        if not cluster.orders:
+            return None
+        
+        # Default depot location (warehouse/distribution center)
+        if depot_location is None:
+            depot_location = (40.7831, -73.9712)  # NYC example
+        
+        # Create waypoints: depot -> delivery locations -> depot
+        waypoints = [depot_location]
+        waypoints.extend([(order.latitude, order.longitude) for order in cluster.orders])
+        waypoints.append(depot_location)
+        
+        # Get optimized route
+        if self.use_mapbox:
+            route_data = self.get_route_mapbox(waypoints)
+        else:
+            route_data = self.get_route_osrm(waypoints)
+        
+        # Determine delivery sequence
+        if "waypoint_order" in route_data:
+            # Mapbox provides optimized order
+            order_indices = route_data["waypoint_order"][1:-1]  # Exclude depot start/end
+            delivery_sequence = [cluster.orders[i].order_id for i in order_indices]
+        else:
+            # Use original order
+            delivery_sequence = [order.order_id for order in cluster.orders]
+        
+        return OptimizedRoute(
+            route_id=f"ROUTE_{cluster.cluster_id}",
+            driver_id="",  # To be assigned later
+            clusters=[cluster],
+            waypoints=waypoints,
+            total_distance=route_data["distance"],
+            estimated_duration=route_data["duration"],
+            delivery_sequence=delivery_sequence
+        )
+
+# =============================================================================
+# 5. DRIVER & VEHICLE ASSIGNMENT ENGINE
+# =============================================================================
+
+class DriverAssignmentEngine:
+    """Driver and vehicle assignment using graph-based matching"""
+    
+    def __init__(self, spark_session: SparkSession):
+        self.spark = spark_session
+        self.drivers = []
+        self.load_sample_drivers()
+    
+    def load_sample_drivers(self):
+        """Load sample drivers and vehicles"""
+        sample_drivers = [
+            Driver("DRV001", "John Smith", 40.7831, -73.9712, 2.0, 100.0, "08:00", "16:00", True),
+            Driver("DRV002", "Jane Doe", 40.7505, -73.9934, 1.5, 80.0, "09:00", "17:00", True),
+            Driver("DRV003", "Mike Johnson", 40.6892, -73.9442, 3.0, 150.0, "07:00", "15:00", True),
+            Driver("DRV004", "Sarah Wilson", 40.7282, -73.7949, 2.5, 120.0, "10:00", "18:00", True),
+            Driver("DRV005", "Tom Brown", 40.7589, -73.9851, 2.0, 100.0, "08:30", "16:30", True),
+        ]
+        self.drivers = sample_drivers
+    
+    def calculate_assignment_score(self, driver: Driver, route: OptimizedRoute) -> float:
+        """Calculate assignment score based on multiple factors"""
+        if not driver.is_available or not route.clusters:
+            return 0.0
+        
+        cluster = route.clusters[0]  # Assuming single cluster per route
+        
+        # Factor 1: Distance from driver to first delivery
+        first_order = cluster.orders[0]
+        distance_to_first = geodesic(
+            (driver.current_latitude, driver.current_longitude),
+            (first_order.latitude, first_order.longitude)
+        ).kilometers
+        
+        distance_score = max(0, 1 - (distance_to_first / 20))  # Penalize distances > 20km
+        
+        # Factor 2: Capacity utilization
+        volume_utilization = cluster.total_volume / driver.vehicle_capacity_volume
+        weight_utilization = cluster.total_weight / driver.vehicle_capacity_weight
+        
+        # Penalize over-capacity or very low utilization
+        if volume_utilization > 1.0 or weight_utilization > 1.0:
+            capacity_score = 0.0
+        else:
+            capacity_score = min(volume_utilization, weight_utilization) + 0.1
+        
+        # Factor 3: Time window compatibility
+        # Simplified: assume all drivers can handle all time windows
+        time_score = 1.0
+        
+        # Factor 4: Driver workload balancing
+        current_load_score = 1.0 - (driver.current_load_volume / driver.vehicle_capacity_volume)
+        
+        # Weighted combination
+        total_score = (
+            0.3 * distance_score +
+            0.4 * capacity_score +
+            0.2 * time_score +
+            0.1 * current_load_score
+        )
+        
+        return total_score
+    
+    def assign_routes_to_drivers(self, routes: List[OptimizedRoute]) -> List[OptimizedRoute]:
+        """Assign routes to drivers using bipartite matching"""
+        if not routes or not self.drivers:
+            return routes
+        
+        # Calculate assignment scores for all driver-route pairs
+        assignment_matrix = []
+        for i, driver in enumerate(self.drivers):
+            driver_scores = []
+            for j, route in enumerate(routes):
+                score = self.calculate_assignment_score(driver, route)
+                driver_scores.append(score)
+            assignment_matrix.append(driver_scores)
+        
+        # Simple greedy assignment (could be improved with Hungarian algorithm)
+        assigned_routes = []
+        used_drivers = set()
+        
+        # Sort routes by total score (sum of all driver scores)
+        route_priorities = []
+        for j, route in enumerate(routes):
+            total_score = sum(assignment_matrix[i][j] for i in range(len(self.drivers)))
+            route_priorities.append((total_score, j, route))
+        
+        route_priorities.sort(reverse=True)
+        
+        # Assign routes in priority order
+        for _, route_idx, route in route_priorities:
+            best_driver_idx = -1
+            best_score = 0.0
+            
+            for i, driver in enumerate(self.drivers):
+                if i not in used_drivers:
+                    score = assignment_matrix[i][route_idx]
+                    if score > best_score:
+                        best_score = score
+                        best_driver_idx = i
+            
+            if best_driver_idx >= 0 and best_score > 0.3:  # Minimum score threshold
+                route.driver_id = self.drivers[best_driver_idx].driver_id
+                used_drivers.add(best_driver_idx)
+                
+                # Update driver availability and load
+                driver = self.drivers[best_driver_idx]
+                if route.clusters:
+                    cluster = route.clusters[0]
+                    driver.current_load_volume += cluster.total_volume
+                    driver.current_load_weight += cluster.total_weight
+                
+                assigned_routes.append(route)
+                logger.info(f"Assigned route {route.route_id} to driver {driver.driver_id}")
+            else:
+                # Route couldn't be assigned
+                assigned_routes.append(route)
+                logger.warning(f"Could not assign route {route.route_id}")
+        
+        return assigned_routes
+
+# =============================================================================
+# 6. VEHICLE TRACKING SIMULATION
+# =============================================================================
+
+class VehicleTracker:
+    """Simulate real-time vehicle tracking"""
+    
+    def __init__(self, producer: KafkaProducer):
+        self.producer = producer
+        self.active_routes = {}
+        self.running = False
+    
+    def start_route_tracking(self, route: OptimizedRoute):
+        """Start tracking a route"""
+        if route.driver_id and route.waypoints:
+            self.active_routes[route.route_id] = {
+                'route': route,
+                'current_waypoint': 0,
+                'progress': 0.0,
+                'start_time': datetime.now()
+            }
+    
+    def simulate_vehicle_movement(self):
+        """Simulate vehicle movement and publish tracking data"""
+        def tracking_loop():
+            while self.running:
+                current_time = datetime.now()
+                
+                for route_id, tracking_data in list(self.active_routes.items()):
+                    route = tracking_data['route']
+                    progress = tracking_data['progress']
+                    
+                    # Simulate movement along route
+                    if progress < 1.0:
+                        # Update progress (assume 30 km/h average speed)
+                        elapsed_minutes = (current_time - tracking_data['start_time']).total_seconds() / 60
+                        expected_progress = elapsed_minutes / route.estimated_duration
+                        
+                        tracking_data['progress'] = min(1.0, expected_progress)
+                        
+                        # Interpolate current position
+                        if len(route.waypoints) >= 2:
+                            waypoint_progress = tracking_data['progress'] * (len(route.waypoints) - 1)
+                            waypoint_idx = int(waypoint_progress)
+                            waypoint_offset = waypoint_progress - waypoint_idx
+                            
+                            if waypoint_idx < len(route.waypoints) - 1:
+                                start_point = route.waypoints[waypoint_idx]
+                                end_point = route.waypoints[waypoint_idx + 1]
+                                
+                                # Linear interpolation
+                                current_lat = start_point[0] + (end_point[0] - start_point[0]) * waypoint_offset
+                                current_lon = start_point[1] + (end_point[1] - start_point[1]) * waypoint_offset
+                                
+                                # Publish tracking update
+                                tracking_update = {
+                                    'route_id': route_id,
+                                    'driver_id': route.driver_id,
+                                    'latitude': current_lat,
+                                    'longitude': current_lon,
+                                    'progress': tracking_data['progress'],
+                                    'timestamp': current_time.isoformat(),
+                                    'status': 'in_transit' if tracking_data['progress'] < 1.0 else 'completed'
+                                }
+                                
+                                self.producer.send(
+                                    Config.KAFKA_TRACKING_TOPIC,
+                                    key=route_id.encode('utf-8'),
+                                    value=json.dumps(tracking_update).encode('utf-8')
+                                )
+                    else:
+                        # Route completed
+                        del self.active_routes[route_id]
+                        logger.info(f"Route {route_id} completed")
+                
+                time.sleep(30)  # Update every 30 seconds
+        
+        self.running = True
+        thread = threading.Thread(target=tracking_loop)
+        thread.daemon = True
+        thread.start()
+        return thread
+    
+    def stop_tracking(self):
+        """Stop vehicle tracking"""
+        self.running = False
+
+# =============================================================================
+# 7. MAIN ORCHESTRATION ENGINE
+# =============================================================================
+
+class DeliveryOptimizationSystem:
+    """Main system orchestrating all components"""
+    
+    def __init__(self):
+        # Initialize Spark
+        self.spark = SparkSession.builder \
+            .appName("DeliveryOptimization") \
+            .config("spark.sql.adaptive.enabled", "true") \
+            .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+            .getOrCreate()
+        
+        # Initialize Kafka
+        self.producer = KafkaProducer(
+            bootstrap_servers=Config.KAFKA_BOOTSTRAP_SERVERS,
+            value_serializer=lambda x: x,
+            key_serializer=lambda x: x
+        )
+        
+        self.consumer = KafkaConsumer(
+            Config.KAFKA_ORDER_TOPIC,
+            bootstrap_servers=Config.KAFKA_BOOTSTRAP_SERVERS,
+            value_deserializer=lambda x: json.loads(x.decode('utf-8')),
+            key_deserializer=lambda x: x.decode('utf-8'),
+            consumer_timeout_ms=5000
+        )
+        
+        # Initialize components
+        self.order_generator = OrderGenerator(self.producer)
+        self.clustering_engine = OrderClusteringEngine(self.spark)
+        self.route_optimizer = RouteOptimizer(use_mapbox=False)
+        self.assignment_engine = DriverAssignmentEngine(self.spark)
+        self.vehicle_tracker = VehicleTracker(self.producer)
+        
+        # Data storage
+        self.pending_orders = []
+        self.active_clusters = []
+        self.active_routes = []
+        
+        self.running = False
+    
+    def start_system(self):
+        """Start the entire delivery optimization system"""
+        logger.info("Starting Delivery Optimization System...")
+        
+        self.running = True
+        
+        # Start order generation
+        self.order_generator.start_generation(orders_per_minute=5)
+        
+        # Start vehicle tracking
+        self.vehicle_tracker.simulate_vehicle_movement()
+        
+        # Start main processing loop
+        self.process_orders_continuously()
+    
+    def process_orders_continuously(self):
+        """Main processing loop"""
+        def processing_loop():
+            batch_size = 50
+            processing_interval = 60  # seconds
+            
+            while self.running:
+                try:
+                    # Collect orders from Kafka
+                    new_orders = []
+                    
+                    # Poll Kafka for new messages
+                    for message in self.consumer:
+                        if message.value:
+                            order_data = message.value
+                            order = Order(
+                                order_id=order_data['order_id'],
+                                customer_id=order_data['customer_id'],
+                                latitude=order_data['latitude'],
+                                longitude=order_data['longitude'],
+                                delivery_time_slot=order_data['delivery_time_slot'],
+                                package_size=order_data['package_size'],
+                                package_volume=order_data['package_volume'],
+                                package_weight=order_data['package_weight'],
+                                priority=order_data['priority'],
+                                timestamp=datetime.fromisoformat(order_data['timestamp'])
+                            )
+                            new_orders.append(order)
+                            
+                            if len(new_orders) >= batch_size:
+                                break
+                    
+                    if new_orders:
+                        self.pending_orders.extend(new_orders)
+                        logger.info(f"Collected {len(new_orders)} new orders")
+                    
+                    # Process orders if we have enough or enough time has passed
+                    if len(self.pending_orders) >= batch_size:
+                        self.process_order_batch()
+                    
+                    time.sleep(processing_interval)
+                    
+                except Exception as e:
+                    logger.error(f"Error in processing loop: {e}")
+                    time.sleep(5)
+        
+        thread = threading.Thread(target=processing_loop)
+        thread.daemon = True
+        thread.start()
+        return thread
+    
+    def process_order_batch(self):
+        """Process a batch of orders through the optimization pipeline"""
+        if not self.pending_orders:
+            return
+        
+        logger.info(f"Processing batch of {len(self.pending_orders)} orders")
+        
+        try:
+            # Step 1: Clustering
+            clusters = self.clustering_engine.process_order_batch(self.pending_orders)
+            
+            # Step 2: Route Optimization
+            optimized_routes = []
+            for cluster in clusters:
+                route = self.route_optimizer.optimize_cluster_route(cluster)
+                if route:
+                    optimized_routes.append(route)
+            
+            # Step 3: Driver Assignment
+            assigned_routes = self.assignment_engine.assign_routes_to_drivers(optimized_routes)
+            
+            # Step 4: Start Vehicle Tracking
+            for route in assigned_routes:
+                if route.driver_id:
+                    self.vehicle_tracker.start_route_tracking(route)
+                    
+                    # Publish optimized route to Kafka
+                    route_data = {
+                        'route_id': route.route_id,
+                        'driver_id': route.driver_id,
+                        'clusters': [
+                            {
+                                'cluster_id': cluster.cluster_id,
+                                'order_count': len(cluster.orders),
+                                'centroid_lat': cluster.centroid_lat,
+                                'centroid_lon': cluster.centroid_lon,
+                                'time_window': cluster.time_window,
+                                'total_volume': cluster.total_volume,
+                                'total_weight': cluster.total_weight
+                            } for cluster in route.clusters
+                        ],
+                        'total_distance': route.total_distance,
+                        'estimated_duration': route.estimated_duration,
+                        'delivery_sequence': route.delivery_sequence,
+                        'timestamp': datetime.now().isoformat()
+                    }
+                    
+                    self.producer.send(
+                        Config.KAFKA_ROUTE_TOPIC,
+                        key=route.route_id.encode('utf-8'),
+                        value=json.dumps(route_data).encode('utf-8')
+                    )
+            
+            # Update system state
+            self.active_clusters.extend(clusters)
+            self.active_routes.extend(assigned_routes)
+            
+            # Clear processed orders
+            self.pending_orders.clear()
+            
+            logger.info(f"Successfully processed batch: {len(clusters)} clusters, {len(assigned_routes)} routes")
+            
+        except Exception as e:
+            logger.error(f"Error processing order batch: {e}")
+    
+    def stop_system(self):
+        """Stop the entire system"""
+        logger.info("Stopping Delivery Optimization System...")
+        
+        self.running = False
+        self.order_generator.stop_generation()
+        self.vehicle_tracker.stop_tracking()
+        
+        self.producer.close()
+        self.consumer.close()
+        self.spark.stop()
+
+# =============================================================================
+# 8. REST API FOR DASHBOARD INTEGRATION
+# =============================================================================
+
+class DeliveryAPI:
+    """REST API for dashboard integration"""
+    
+    def __init__(self, optimization_system: DeliveryOptimizationSystem):
+        self.system = optimization_system
+        self.app = Flask(__name__)
+        CORS(self.app)
+        
+        self.setup_routes()
+    
+    def setup_routes(self):
+        """Setup API routes"""
+        
+        @self.app.route('/api/orders', methods=['GET'])
+        def get_orders():
+            """Get current pending orders"""
+            orders_data = []
+            for order in self.system.pending_orders[-100:]:  # Last 100 orders
+                orders_data.append(order.to_dict())
+            
+            return jsonify({
+                'orders': orders_data,
+                'total_pending': len(self.system.pending_orders)
+            })
+        
+        @self.app.route('/api/clusters', methods=['GET'])
+        def get_clusters():
+            """Get current active clusters"""
+            clusters_data = []
+            for cluster in self.system.active_clusters[-50:]:  # Last 50 clusters
+                clusters_data.append({
+                    'cluster_id': cluster.cluster_id,
+                    'centroid_lat': cluster.centroid_lat,
+                    'centroid_lon': cluster.centroid_lon,
+                    'time_window': cluster.time_window,
+                    'order_count': len(cluster.orders),
+                    'total_volume': cluster.total_volume,
+                    'total_weight': cluster.total_weight,
+                    'estimated_duration': cluster.estimated_duration,
+                    'orders': [order.to_dict() for order in cluster.orders]
+                })
+            
+            return jsonify({'clusters': clusters_data})
+        
+        @self.app.route('/api/routes', methods=['GET'])
+        def get_routes():
+            """Get current active routes"""
+            routes_data = []
+            for route in self.system.active_routes[-20:]:  # Last 20 routes
+                routes_data.append({
+                    'route_id': route.route_id,
+                    'driver_id': route.driver_id,
+                    'total_distance': route.total_distance,
+                    'estimated_duration': route.estimated_duration,
+                    'delivery_sequence': route.delivery_sequence,
+                    'waypoints': route.waypoints,
+                    'clusters': len(route.clusters)
+                })
+            
+            return jsonify({'routes': routes_data})
+        
+        @self.app.route('/api/drivers', methods=['GET'])
+        def get_drivers():
+            """Get driver status"""
+            drivers_data = []
+            for driver in self.system.assignment_engine.drivers:
+                drivers_data.append({
+                    'driver_id': driver.driver_id,
+                    'name': driver.name,
+                    'current_latitude': driver.current_latitude,
+                    'current_longitude': driver.current_longitude,
+                    'is_available': driver.is_available,
+                    'vehicle_capacity_volume': driver.vehicle_capacity_volume,
+                    'vehicle_capacity_weight': driver.vehicle_capacity_weight,
+                    'current_load_volume': driver.current_load_volume,
+                    'current_load_weight': driver.current_load_weight,
+                    'shift_start': driver.shift_start,
+                    'shift_end': driver.shift_end
+                })
+            
+            return jsonify({'drivers': drivers_data})
+        
+        @self.app.route('/api/tracking/<route_id>', methods=['GET'])
+        def get_route_tracking(route_id):
+            """Get real-time tracking for a specific route"""
+            if route_id in self.system.vehicle_tracker.active_routes:
+                tracking_data = self.system.vehicle_tracker.active_routes[route_id]
+                route = tracking_data['route']
+                
+                # Get current position
+                progress = tracking_data['progress']
+                if len(route.waypoints) >= 2:
+                    waypoint_progress = progress * (len(route.waypoints) - 1)
+                    waypoint_idx = int(waypoint_progress)
+                    waypoint_offset = waypoint_progress - waypoint_idx
+                    
+                    if waypoint_idx < len(route.waypoints) - 1:
+                        start_point = route.waypoints[waypoint_idx]
+                        end_point = route.waypoints[waypoint_idx + 1]
+                        
+                        current_lat = start_point[0] + (end_point[0] - start_point[0]) * waypoint_offset
+                        current_lon = start_point[1] + (end_point[1] - start_point[1]) * waypoint_offset
+                    else:
+                        current_lat = route.waypoints[-1][0]
+                        current_lon = route.waypoints[-1][1]
+                else:
+                    current_lat = route.waypoints[0][0] if route.waypoints else 0
+                    current_lon = route.waypoints[0][1] if route.waypoints else 0
+                
+                return jsonify({
+                    'route_id': route_id,
+                    'driver_id': route.driver_id,
+                    'current_latitude': current_lat,
+                    'current_longitude': current_lon,
+                    'progress': progress,
+                    'status': 'in_transit' if progress < 1.0 else 'completed',
+                    'start_time': tracking_data['start_time'].isoformat()
+                })
+            
+            return jsonify({'error': 'Route not found'}), 404
+        
+        @self.app.route('/api/stats', methods=['GET'])
+        def get_system_stats():
+            """Get system statistics"""
+            return jsonify({
+                'pending_orders': len(self.system.pending_orders),
+                'active_clusters': len(self.system.active_clusters),
+                'active_routes': len(self.system.active_routes),
+                'available_drivers': len([d for d in self.system.assignment_engine.drivers if d.is_available]),
+                'total_drivers': len(self.system.assignment_engine.drivers),
+                'system_uptime': (datetime.now() - datetime.now()).total_seconds()  # Placeholder
+            })
+    
+    def run(self, host='0.0.0.0', port=5000, debug=False):
+        """Run the API server"""
+        self.app.run(host=host, port=port, debug=debug, threaded=True)
+

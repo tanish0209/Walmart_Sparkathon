@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: walmart-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=admin123
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - walmart-network
+
+  backend:
+    build: ./backend
+    container_name: walmart-backend
+    ports:
+      - "5000:5000"
+    depends_on:
+      - rabbitmq
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=admin
+      - RABBITMQ_PASS=admin123
+      - FLASK_ENV=development
+    volumes:
+      - ./backend:/app
+    networks:
+      - walmart-network
+
+  data-processor:
+    build: ./data-processor
+    container_name: walmart-data-processor
+    depends_on:
+      - rabbitmq
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=admin
+      - RABBITMQ_PASS=admin123
+    volumes:
+      - ./data-processor:/app
+    networks:
+      - walmart-network
+
+networks:
+  walmart-network:
+    driver: bridge
+
+volumes:
+  rabbitmq_data:

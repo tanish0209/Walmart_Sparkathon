@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Multi-Hop Delivery Planning</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        .panel h2 {
+            color: #4a5568;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .control-group {
+            margin-bottom: 20px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #2d3748;
+        }
+
+        .control-group input, .control-group select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .control-group input:focus, .control-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: transform 0.2s, opacity 0.2s;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            opacity: 0.9;
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        #visualization {
+            width: 100%;
+            height: 500px;
+            border: 3px solid #e2e8f0;
+            border-radius: 12px;
+            background: #f8fafc;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .node {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+            cursor: pointer;
+            transition: transform 0.3s;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+
+        .node:hover {
+            transform: scale(1.2);
+        }
+
+        .warehouse { background: #e53e3e; }
+        .hub { background: #3182ce; }
+        .transfer { background: #38a169; }
+        .customer { background: #d69e2e; }
+
+        .edge {
+            position: absolute;
+            height: 3px;
+            background: #cbd5e0;
+            transform-origin: left center;
+            border-radius: 2px;
+            transition: background-color 0.3s;
+        }
+
+        .edge.active {
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+        }
+
+        .route-info {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 25px;
+            margin-top: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .metric-card {
+            background: linear-gradient(135deg, #f7fafc, #edf2f7);
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+            border: 2px solid #e2e8f0;
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .metric-label {
+            color: #4a5568;
+            font-size: 0.9rem;
+        }
+
+        .route-steps {
+            margin-top: 20px;
+        }
+
+        .step {
+            background: #f7fafc;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .step-icon {
+            font-size: 1.5rem;
+        }
+
+        .step-details {
+            flex: 1;
+        }
+
+        .step-mode {
+            font-weight: bold;
+            color: #2d3748;
+        }
+
+        .step-info {
+            color: #4a5568;
+            font-size: 0.9rem;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #4a5568;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid #e2e8f0;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .algorithm-info {
+            background: #edf2f7;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            border-left: 4px solid #38a169;
+        }
+
+        .algorithm-info h4 {
+            color: #2d3748;
+            margin-bottom: 5px;
+        }
+
+        .algorithm-info p {
+            color: #4a5568;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚚 Dynamic Multi-Hop Delivery Planning</h1>
+            <p>Optimizing last-mile delivery through intelligent route segmentation and vehicle handoffs</p>
+        </div>
+
+        <div class="main-grid">
+            <div class="panel">
+                <h2>🎯 Delivery Configuration</h2>
+                
+                <div class="control-group">
+                    <label for="packages">Number of Packages:</label>
+                    <input type="number" id="packages" value="5" min="1" max="20">
+                </div>
+
+                <div class="control-group">
+                    <label for="congestion">Traffic Congestion Level:</label>
+                    <select id="congestion">
+                        <option value="low">Low (20% slower)</option>
+                        <option value="medium" selected>Medium (50% slower)</option>
+                        <option value="high">High (100% slower)</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label for="priority">Delivery Priority:</label>
+                    <select id="priority">
+                        <option value="cost">Minimize Cost</option>
+                        <option value="time" selected>Minimize Time</option>
+                        <option value="balanced">Balanced</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label for="algorithm">Optimization Algorithm:</label>
+                    <select id="algorithm">
+                        <option value="dijkstra">Dijkstra's Algorithm</option>
+                        <option value="astar" selected>A* Search</option>
+                        <option value="genetic">Genetic Algorithm</option>
+                    </select>
+                </div>
+
+                <button class="btn" onclick="generateDeliveryNetwork()">🏗️ Generate Network</button>
+                <button class="btn" onclick="optimizeRoutes()">⚡ Optimize Routes</button>
+                <button class="btn" onclick="simulateDelivery()">🚀 Simulate Delivery</button>
+            </div>
+
+            <div class="panel">
+                <h2>📊 Network Visualization</h2>
+                <div id="visualization">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>Click "Generate Network" to create delivery infrastructure</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="route-info" id="routeInfo" style="display: none;">
+            <h2>📈 Optimization Results</h2>
+            <div class="metrics" id="metrics"></div>
+            <div class="route-steps" id="routeSteps"></div>
+            <div class="algorithm-info" id="algorithmInfo"></div>
+        </div>
+    </div>
+
+    <script>
+        // Delivery network state
+        let deliveryNetwork = {
+            nodes: [],
+            edges: [],
+            packages: [],
+            routes: []
+        };
+
+        // Vehicle types with realistic characteristics
+        const vehicleTypes = {
+            bike: { 
+                emoji: '🚲', 
+                speed: 12, // km/h in urban areas
+                capacity: 3, // packages
+                costPerKm: 1.5, // USD per km
+                trafficImpact: 0.1, // minimal traffic impact
+                maxRange: 5, // maximum range in km
+                fuelCost: 0 // electric/manual
+            },
+            scooter: { 
+                emoji: '🛵', 
+                speed: 22, // km/h in urban areas
+                capacity: 8, // packages
+                costPerKm: 2.5, // USD per km
+                trafficImpact: 0.3, // moderate traffic impact
+                maxRange: 15, // maximum range in km
+                fuelCost: 0.8 // fuel cost per km
+            },
+            van: { 
+                emoji: '🚚', 
+                speed: 28, // km/h in urban areas (traffic considered)
+                capacity: 50, // packages
+                costPerKm: 6.5, // USD per km
+                trafficImpact: 0.8, // high traffic impact
+                maxRange: 100, // maximum range in km
+                fuelCost: 1.2 // fuel cost per km
+            },
+            truck: { 
+                emoji: '🚛', 
+                speed: 25, // km/h in urban areas (slower due to size)
+                capacity: 150, // packages
+                costPerKm: 12.0, // USD per km
+                trafficImpact: 1.0, // maximum traffic impact
+                maxRange: 200, // maximum range in km
+                fuelCost: 2.5 // fuel cost per km
+            }
+        };
+
+        // Node types
+        const nodeTypes = {
+            warehouse: { emoji: '🏭', color: '#e53e3e' },
+            hub: { emoji: '🏢', color: '#3182ce' },
+            transfer: { emoji: '🔄', color: '#38a169' },
+            customer: { emoji: '🏠', color: '#d69e2e' }
+        };
+
+        class DeliveryOptimizer {
+            constructor() {
+                this.graph = new Map();
+                this.heuristics = new Map();
+            }
+
+            // Build graph from network
+            buildGraph(network) {
+                this.graph.clear();
+                this.heuristics.clear();
+
+                // Add nodes
+                network.nodes.forEach(node => {
+                    if (node && node.id && typeof node.x === 'number' && typeof node.y === 'number') {
+                        this.graph.set(node.id, []);
+                        this.heuristics.set(node.id, { x: node.x, y: node.y });
+                    }
+                });
+
+                // Add edges
+                network.edges.forEach(edge => {
+                    if (!edge || !edge.from || !edge.to || !edge.vehicle) return;
+                    
+                    const fromNode = network.nodes.find(n => n && n.id === edge.from);
+                    const toNode = network.nodes.find(n => n && n.id === edge.to);
+                    
+                    if (!fromNode || !toNode) {
+                        console.warn(`Edge ${edge.from} -> ${edge.to} references missing nodes`);
+                        return;
+                    }
+                    
+                    const distance = this.calculateDistance(fromNode, toNode);
+                    
+                    if (!this.graph.has(edge.from)) {
+                        this.graph.set(edge.from, []);
+                    }
+                    
+                    this.graph.get(edge.from).push({
+                        to: edge.to,
+                        distance: distance,
+                        time: this.calculateTime(distance, edge.vehicle),
+                        cost: this.calculateCost(distance, edge.vehicle),
+                        vehicle: edge.vehicle
+                    });
+                });
+            }
+
+            // A* Algorithm implementation
+            aStarSearch(start, goal, priority = 'time') {
+                const openSet = new Map();
+                const closedSet = new Set();
+                const cameFrom = new Map();
+                const gScore = new Map();
+                const fScore = new Map();
+
+                gScore.set(start, 0);
+                fScore.set(start, this.heuristic(start, goal));
+                openSet.set(start, fScore.get(start));
+
+                while (openSet.size > 0) {
+                    // Get node with lowest fScore
+                    let current = null;
+                    let lowestF = Infinity;
+                    for (let [node, f] of openSet) {
+                        if (f < lowestF) {
+                            lowestF = f;
+                            current = node;
+                        }
+                    }
+
+                    if (current === goal) {
+                        return this.reconstructPath(cameFrom, current);
+                    }
+
+                    openSet.delete(current);
+                    closedSet.add(current);
+
+                    const neighbors = this.graph.get(current) || [];
+                    for (let neighbor of neighbors) {
+                        if (closedSet.has(neighbor.to)) continue;
+
+                        const tentativeG = gScore.get(current) + this.getEdgeWeight(neighbor, priority);
+
+                        if (!gScore.has(neighbor.to) || tentativeG < gScore.get(neighbor.to)) {
+                            cameFrom.set(neighbor.to, { node: current, edge: neighbor });
+                            gScore.set(neighbor.to, tentativeG);
+                            fScore.set(neighbor.to, tentativeG + this.heuristic(neighbor.to, goal));
+                            
+                            if (!openSet.has(neighbor.to)) {
+                                openSet.set(neighbor.to, fScore.get(neighbor.to));
+                            }
+                        }
+                    }
+                }
+
+                return null; // No path found
+            }
+
+            // Dijkstra's Algorithm
+            dijkstraSearch(start, goal, priority = 'time') {
+                const distances = new Map();
+                const previous = new Map();
+                const unvisited = new Set();
+
+                // Initialize distances
+                for (let node of this.graph.keys()) {
+                    distances.set(node, Infinity);
+                    previous.set(node, null);
+                    unvisited.add(node);
+                }
+                distances.set(start, 0);
+
+                while (unvisited.size > 0) {
+                    // Find unvisited node with minimum distance
+                    let current = null;
+                    let minDistance = Infinity;
+                    for (let node of unvisited) {
+                        if (distances.get(node) < minDistance) {
+                            minDistance = distances.get(node);
+                            current = node;
+                        }
+                    }
+
+                    if (current === null || current === goal) break;
+
+                    unvisited.delete(current);
+
+                    const neighbors = this.graph.get(current) || [];
+                    for (let neighbor of neighbors) {
+                        if (!unvisited.has(neighbor.to)) continue;
+
+                        const alt = distances.get(current) + this.getEdgeWeight(neighbor, priority);
+                        if (alt < distances.get(neighbor.to)) {
+                            distances.set(neighbor.to, alt);
+                            previous.set(neighbor.to, { node: current, edge: neighbor });
+                        }
+                    }
+                }
+
+                return this.reconstructPathDijkstra(previous, goal);
+            }
+
+            // Genetic Algorithm for multi-route optimization
+            geneticAlgorithm(packages, priority = 'time') {
+                const populationSize = 50;
+                const generations = 100;
+                const mutationRate = 0.1;
+                const eliteSize = 10;
+
+                let population = this.initializePopulation(packages, populationSize);
+
+                for (let gen = 0; gen < generations; gen++) {
+                    // Evaluate fitness
+                    const fitness = population.map(individual => ({
+                        individual,
+                        fitness: this.evaluateFitness(individual, priority)
+                    }));
+
+                    // Sort by fitness (lower is better for cost/time)
+                    fitness.sort((a, b) => a.fitness - b.fitness);
+
+                    // Select elite
+                    const elite = fitness.slice(0, eliteSize).map(f => f.individual);
+
+                    // Generate new population
+                    const newPopulation = [...elite];
+                    
+                    while (newPopulation.length < populationSize) {
+                        const parent1 = this.tournamentSelect(fitness);
+                        const parent2 = this.tournamentSelect(fitness);
+                        let child = this.crossover(parent1, parent2);
+                        
+                        if (Math.random() < mutationRate) {
+                            child = this.mutate(child, packages);
+                        }
+                        
+                        newPopulation.push(child);
+                    }
+
+                    population = newPopulation;
+                }
+
+                // Return best solution
+                const finalFitness = population.map(individual => ({
+                    individual,
+                    fitness: this.evaluateFitness(individual, priority)
+                }));
+                finalFitness.sort((a, b) => a.fitness - b.fitness);
+                
+                return this.convertToRoutes(finalFitness[0].individual, packages);
+            }
+
+            // Helper methods
+            calculateDistance(node1, node2) {
+                if (!node1 || !node2 || typeof node1.x !== 'number' || typeof node1.y !== 'number' || 
+                    typeof node2.x !== 'number' || typeof node2.y !== 'number') {
+                    console.warn('Invalid nodes for distance calculation:', node1, node2);
+                    return 1; // Default distance
+                }
+                const dx = node1.x - node2.x;
+                const dy = node1.y - node2.y;
+                return Math.sqrt(dx * dx + dy * dy) / 10; // Scale to reasonable km
+            }
+
+            calculateTime(distance, vehicle) {
+                if (!vehicleTypes[vehicle]) {
+                    console.warn('Unknown vehicle type:', vehicle);
+                    return 1; // Default time
+                }
+                const congestionMultiplier = this.getCongestionMultiplier();
+                const baseTime = distance / vehicleTypes[vehicle].speed;
+                return baseTime * (1 + vehicleTypes[vehicle].trafficImpact * congestionMultiplier);
+            }
+
+            calculateCost(distance, vehicle) {
+                if (!vehicleTypes[vehicle]) {
+                    console.warn('Unknown vehicle type:', vehicle);
+                    return 1; // Default cost
+                }
+                return distance * vehicleTypes[vehicle].costPerKm;
+            }
+
+            getCongestionMultiplier() {
+                const congestion = document.getElementById('congestion').value;
+                return congestion === 'low' ? 0.2 : congestion === 'medium' ? 0.5 : 1.0;
+            }
+
+            getEdgeWeight(edge, priority) {
+                switch (priority) {
+                    case 'cost': return edge.cost;
+                    case 'time': return edge.time;
+                    case 'balanced': return (edge.cost / 10) + edge.time;
+                    default: return edge.time;
+                }
+            }
+
+            heuristic(node1, node2) {
+                const pos1 = this.heuristics.get(node1);
+                const pos2 = this.heuristics.get(node2);
+                if (!pos1 || !pos2) {
+                    console.warn('Missing heuristic data for nodes:', node1, node2);
+                    return 0;
+                }
+                return Math.sqrt((pos1.x - pos2.x) ** 2 + (pos1.y - pos2.y) ** 2) / 10;
+            }
+
+            reconstructPath(cameFrom, current) {
+                const path = [];
+                while (cameFrom.has(current)) {
+                    const pathNode = cameFrom.get(current);
+                    path.unshift({
+                        from: pathNode.node,
+                        to: current,
+                        vehicle: pathNode.edge.vehicle,
+                        distance: pathNode.edge.distance,
+                        time: pathNode.edge.time,
+                        cost: pathNode.edge.cost
+                    });
+                    current = pathNode.node;
+                }
+                return path;
+            }
+
+            reconstructPathDijkstra(previous, goal) {
+                const path = [];
+                let current = goal;
+                while (previous.get(current)) {
+                    const pathNode = previous.get(current);
+                    path.unshift({
+                        from: pathNode.node,
+                        to: current,
+                        vehicle: pathNode.edge.vehicle,
+                        distance: pathNode.edge.distance,
+                        time: pathNode.edge.time,
+                        cost: pathNode.edge.cost
+                    });
+                    current = pathNode.node;
+                }
+                return path;
+            }
+
+            // Genetic Algorithm helper methods
+            initializePopulation(packages, size) {
+                const population = [];
+                for (let i = 0; i < size; i++) {
+                    const individual = packages.map(pkg => ({
+                        packageId: pkg.id,
+                        route: this.generateRandomRoute(pkg.from, pkg.to)
+                    }));
+                    population.push(individual);
+                }
+                return population;
+            }
+
+            generateRandomRoute(from, to) {
+                // Simple random route generation
+                const algorithm = Math.random() < 0.5 ? 'dijkstra' : 'astar';
+                const priority = ['cost', 'time', 'balanced'][Math.floor(Math.random() * 3)];
+                return this[algorithm === 'dijkstra' ? 'dijkstraSearch' : 'aStarSearch'](from, to, priority) || [];
+            }
+
+            evaluateFitness(individual, priority) {
+                let totalCost = 0;
+                let totalTime = 0;
+                
+                individual.forEach(route => {
+                    route.route.forEach(step => {
+                        totalCost += step.cost;
+                        totalTime += step.time;
+                    });
+                });
+
+                switch (priority) {
+                    case 'cost': return totalCost;
+                    case 'time': return totalTime;
+                    case 'balanced': return totalCost / 10 + totalTime;
+                    default: return totalTime;
+                }
+            }
+
+            tournamentSelect(fitness, tournamentSize = 3) {
+                const tournament = [];
+                for (let i = 0; i < tournamentSize; i++) {
+                    tournament.push(fitness[Math.floor(Math.random() * fitness.length)]);
+                }
+                tournament.sort((a, b) => a.fitness - b.fitness);
+                return tournament[0].individual;
+            }
+
+            crossover(parent1, parent2) {
+                const child = [];
+                for (let i = 0; i < parent1.length; i++) {
+                    child.push(Math.random() < 0.5 ? parent1[i] : parent2[i]);
+                }
+                return child;
+            }
+
+            mutate(individual, packages) {
+                const mutated = [...individual];
+                const mutationIndex = Math.floor(Math.random() * mutated.length);
+                const pkg = packages[mutationIndex];
+                mutated[mutationIndex] = {
+                    packageId: pkg.id,
+                    route: this.generateRandomRoute(pkg.from, pkg.to)
+                };
+                return mutated;
+            }
+
+            convertToRoutes(individual, packages) {
+                return individual.map((route, index) => ({
+                    packageId: packages[index].id,
+                    path: route.route,
+                    totalCost: route.route.reduce((sum, step) => sum + step.cost, 0),
+                    totalTime: route.route.reduce((sum, step) => sum + step.time, 0)
+                }));
+            }
+        }
+
+        const optimizer = new DeliveryOptimizer();
+
+        function generateDeliveryNetwork() {
+            const viz = document.getElementById('visualization');
+            const numPackages = parseInt(document.getElementById('packages').value) || 5;
+            
+            // Clear previous network
+            viz.innerHTML = '';
+            deliveryNetwork = { nodes: [], edges: [], packages: [], routes: [] };
+
+            // Generate nodes with proper validation
+            const nodes = [
+                { id: 'warehouse', type: 'warehouse', x: 50, y: 250 },
+                { id: 'hub1', type: 'hub', x: 200, y: 150 },
+                { id: 'hub2', type: 'hub', x: 200, y: 350 },
+                { id: 'transfer1', type: 'transfer', x: 350, y: 100 },
+                { id: 'transfer2', type: 'transfer', x: 350, y: 200 },
+                { id: 'transfer3', type: 'transfer', x: 350, y: 300 },
+                { id: 'transfer4', type: 'transfer', x: 350, y: 400 }
+            ];
+
+            // Generate customer nodes with bounds checking
+            const maxCustomers = Math.min(numPackages, 20); // Limit to prevent overcrowding
+            for (let i = 0; i < maxCustomers; i++) {
+                nodes.push({
+                    id: `customer${i + 1}`,
+                    type: 'customer',
+                    x: 500 + (i % 4) * 80, // Adjust spacing
+                    y: 80 + Math.floor(i / 4) * 70 // Adjust spacing
+                });
+            }
+
+            deliveryNetwork.nodes = nodes;
+
+            // Generate edges with validation
+            const edges = [
+                // Warehouse to hubs
+                { from: 'warehouse', to: 'hub1', vehicle: 'truck' },
+                { from: 'warehouse', to: 'hub2', vehicle: 'truck' },
+                
+                // Hubs to transfer points
+                { from: 'hub1', to: 'transfer1', vehicle: 'van' },
+                { from: 'hub1', to: 'transfer2', vehicle: 'van' },
+                { from: 'hub2', to: 'transfer3', vehicle: 'van' },
+                { from: 'hub2', to: 'transfer4', vehicle: 'van' },
+                
+                // Cross connections
+                { from: 'hub1', to: 'hub2', vehicle: 'van' },
+                { from: 'transfer1', to: 'transfer2', vehicle: 'scooter' },
+                { from: 'transfer2', to: 'transfer3', vehicle: 'scooter' },
+                { from: 'transfer3', to: 'transfer4', vehicle: 'scooter' }
+            ];
+
+            // Connect transfer points to customers
+            for (let i = 0; i < maxCustomers; i++) {
+                const transferPoint = `transfer${(i % 4) + 1}`;
+                const customerNode = `customer${i + 1}`;
+                const vehicle = Math.random() < 0.7 ? 'bike' : 'scooter';
+                
+                // Verify both nodes exist before adding edge
+                const transferExists = nodes.some(n => n.id === transferPoint);
+                const customerExists = nodes.some(n => n.id === customerNode);
+                
+                if (transferExists && customerExists) {
+                    edges.push({ from: transferPoint, to: customerNode, vehicle });
+                }
+            }
+
+            deliveryNetwork.edges = edges;
+
+            // Generate packages with validation
+            for (let i = 0; i < maxCustomers; i++) {
+                const customerId = `customer${i + 1}`;
+                if (nodes.some(n => n.id === customerId)) {
+                    deliveryNetwork.packages.push({
+                        id: `pkg${i + 1}`,
+                        from: 'warehouse',
+                        to: customerId,
+                        weight: Math.random() * 5 + 1,
+                        priority: Math.random() < 0.3 ? 'high' : 'normal'
+                    });
+                }
+            }
+
+            // Render network
+            renderNetwork();
+            
+            // Hide route info
+            document.getElementById('routeInfo').style.display = 'none';
+        }
+
+        function renderNetwork() {
+            const viz = document.getElementById('visualization');
+            
+            // Render edges first (so they appear behind nodes)
+            deliveryNetwork.edges.forEach(edge => {
+                const fromNode = deliveryNetwork.nodes.find(n => n.id === edge.from);
+                const toNode = deliveryNetwork.nodes.find(n => n.id === edge.to);
+                
+                const dx = toNode.x - fromNode.x;
+                const dy = toNode.y - fromNode.y;
+                const length = Math.sqrt(dx * dx + dy * dy);
+                const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+                
+                const edgeEl = document.createElement('div');
+                edgeEl.className = 'edge';
+                edgeEl.style.left = fromNode.x + 'px';
+                edgeEl.style.top = fromNode.y + 'px';
+                edgeEl.style.width = length + 'px';
+                edgeEl.style.transform = `rotate(${angle}deg)`;
+                edgeEl.title = `${vehicleTypes[edge.vehicle].emoji} ${edge.vehicle}`;
+                
+                viz.appendChild(edgeEl);
+            });
+
+            // Render nodes
+            deliveryNetwork.nodes.forEach(node => {
+                const nodeEl = document.createElement('div');
+                nodeEl.className = `node ${node.type}`;
+                nodeEl.style.left = (node.x - 20) + 'px';
+                nodeEl.style.top = (node.y - 20) + 'px';
+                nodeEl.textContent = nodeTypes[node.type].emoji;
+                nodeEl.title = `${node.id} (${node.type})`;
+                
+                viz.appendChild(nodeEl);
+            });
+        }
+
+        function optimizeRoutes() {
+            if (deliveryNetwork.nodes.length === 0) {
+                alert('Please generate a network first!');
+                return;
+            }
+
+            const algorithm = document.getElementById('algorithm').value;
+            const priority = document.getElementById('priority').value;
+            
+            // Show loading
+            const routeInfo = document.getElementById('routeInfo');
+            routeInfo.style.display = 'block';
+            routeInfo.innerHTML = '<div class="loading"><div class="spinner"></div><p>Optimizing routes...</p></div>';
+
+            // Simulate computation delay
+            setTimeout(() => {
+                optimizer.buildGraph(deliveryNetwork);
+                
+                let routes = [];
+                let algorithmDescription = '';
+
+                switch (algorithm) {
+                    case 'dijkstra':
+                        algorithmDescription = "Dijkstra's Algorithm finds the shortest path by systematically exploring all possible routes and maintaining the minimum distance to each node.";
+                        deliveryNetwork.packages.forEach(pkg => {
+                            const route = optimizer.dijkstraSearch(pkg.from, pkg.to, priority);
+                            if (route) {
+                                routes.push({
+                                    packageId: pkg.id,
+                                    path: route,
+                                    totalCost: route.reduce((sum, step) => sum + step.cost, 0),
+                                    totalTime: route.reduce((sum, step) => sum + step.time, 0)
+                                });
+                            }
+                        });
+                        break;
+                        
+                    case 'astar':
+                        algorithmDescription = "A* Search uses heuristics to guide the search towards the goal, making it more efficient than Dijkstra for single-destination pathfinding.";
+                        deliveryNetwork.packages.forEach(pkg => {
+                            const route = optimizer.aStarSearch(pkg.from, pkg.to, priority);
+                            if (route) {
+                                routes.push({
+                                    packageId: pkg.id,
+                                    path: route,
+                                    totalCost: route.reduce((sum, step) => sum + step.cost, 0),
+                                    totalTime: route.reduce((sum, step) => sum + step.time, 0)
+                                });
+                            }
+                        });
+                        break;
+                        
+                    case 'genetic':
+                        algorithmDescription = "Genetic Algorithm evolves solutions through selection, crossover, and mutation to find optimal multi-route configurations.";
+                        routes = optimizer.geneticAlgorithm(deliveryNetwork.packages, priority);
+                        break;
+                }
+
+                deliveryNetwork.routes = routes;
+                displayOptimizationResults(routes, algorithmDescription, algorithm, priority);
+                highlightOptimalRoutes(routes);
+            }, 1500);
+        }
+
+        function displayOptimizationResults(routes, algorithmDescription, algorithm, priority) {
+            const routeInfo = document.getElementById('routeInfo');
+            
+            // Calculate total metrics
+            const totalCost = routes.reduce((sum, route) => sum + route.totalCost, 0);
+            const totalTime = routes.reduce((sum, route) => sum + route.totalTime, 0);
+            const avgHops = routes.reduce((sum, route) => sum + route.path.length, 0) / routes.length;
+            const totalDistance = routes.reduce((sum, route) => 
+                sum + route.path.reduce((pathSum, step) => pathSum + step.distance, 0), 0);
+
+            const metricsHtml = `
+                <div class="metric-card">
+                    <div class="metric-value">${totalCost.toFixed(2)}</div>
+                    <div class="metric-label">Total Cost</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value">${totalTime.toFixed(1)}h</div>
+                    <div class="metric-label">Total Time</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value">${avgHops.toFixed(1)}</div>
+                    <div class="metric-label">Avg Hops</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value">${totalDistance.toFixed(1)}km</div>
+                    <div class="metric-label">Total Distance</div>
+                </div>
+            `;
+
+            const routeStepsHtml = routes.map(route => {
+                const stepsHtml = route.path.map((step, index) => {
+                    const vehicle = vehicleTypes[step.vehicle];
+                    return `
+                        <div class="step">
+                            <div class="step-icon">${vehicle.emoji}</div>
+                            <div class="step-details">
+                                <div class="step-mode">${step.vehicle.toUpperCase()}: ${step.from} → ${step.to}</div>
+                                <div class="step-info">
+                                    ${step.distance.toFixed(1)}km • ${step.time.toFixed(1)}h • ${step.cost.toFixed(2)}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                return `
+                    <div style="margin-bottom: 20px; padding: 15px; background: #f8fafc; border-radius: 8px;">
+                        <h4 style="color: #2d3748; margin-bottom: 10px;">
+                            📦 ${route.packageId} 
+                            (${route.path.length} hops • ${route.totalCost.toFixed(2)} • ${route.totalTime.toFixed(1)}h)
+                        </h4>
+                        ${stepsHtml}
+                    </div>
+                `;
+            }).join('');
+
+            routeInfo.innerHTML = `
+                <h2>📈 Optimization Results</h2>
+                <div class="metrics">${metricsHtml}</div>
+                <div class="route-steps">
+                    <h3 style="margin-bottom: 15px; color: #2d3748;">🛣️ Optimized Routes</h3>
+                    ${routeStepsHtml}
+                </div>
+                <div class="algorithm-info">
+                    <h4>Algorithm: ${algorithm.toUpperCase()} (${priority} priority)</h4>
+                    <p>${algorithmDescription}</p>
+                </div>
+            `;
+        }
+
+        function highlightOptimalRoutes(routes) {
+            // Reset all edges
+            document.querySelectorAll('.edge').forEach(edge => {
+                edge.classList.remove('active');
+            });
+
+            // Highlight edges used in optimal routes
+            routes.forEach(route => {
+                route.path.forEach(step => {
+                    const edges = document.querySelectorAll('.edge');
+                    edges.forEach(edge => {
+                        const fromNode = deliveryNetwork.nodes.find(n => n.id === step.from);
+                        const toNode = deliveryNetwork.nodes.find(n => n.id === step.to);
+                        
+                        if (fromNode && toNode) {
+                            const edgeLeft = parseInt(edge.style.left);
+                            const edgeTop = parseInt(edge.style.top);
+                            
+                            if (Math.abs(edgeLeft - fromNode.x) < 5 && Math.abs(edgeTop - fromNode.y) < 5) {
+                                edge.classList.add('active');
+                            }
+                        }
+                    });
+                });
+            });
+        }
+
+        function simulateDelivery() {
+            if (deliveryNetwork.routes.length === 0) {
+                alert('Please optimize routes first!');
+                return;
+            }
+
+            // Animate delivery simulation
+            let currentStep = 0;
+            const totalSteps = deliveryNetwork.routes.reduce((sum, route) => sum + route.path.length, 0);
+            
+            const simulationInterval = setInterval(() => {
+                if (currentStep >= totalSteps) {
+                    clearInterval(simulationInterval);
+                    alert('🎉 All deliveries completed successfully!');
+                    return;
+                }
+
+                // Flash random active edge to simulate movement
+                const activeEdges = document.querySelectorAll('.edge.active');
+                if (activeEdges.length > 0) {
+                    const randomEdge = activeEdges[Math.floor(Math.random() * activeEdges.length)];
+                    randomEdge.style.background = 'linear-gradient(90deg, #f56565, #ed8936)';
+                    randomEdge.style.boxShadow = '0 2px 12px rgba(245, 101, 101, 0.6)';
+                    
+                    setTimeout(() => {
+                        randomEdge.style.background = 'linear-gradient(90deg, #667eea, #764ba2)';
+                        randomEdge.style.boxShadow = '0 2px 8px rgba(102, 126, 234, 0.4)';
+                    }, 300);
+                }
+
+                currentStep++;
+            }, 500);
+        }
+
+        // Initialize with a sample network
+        window.onload = function() {
+            generateDeliveryNetwork();
+        };
+    </script>
+</body>
+</html>
